@@ -12,10 +12,10 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 
 # --------- Load tokenizer and model ---------
-with open(r'C:\ToxicScan Telegram bot\tokenizer.pkl', 'rb') as f:
+with open(r'tokenizer.pkl', 'rb') as f:
     tokenizer = pickle.load(f)
 
-model = load_model(r'C:\ToxicScan Telegram bot\toxic_classifier_lstm.h5')
+model = load_model(r'toxic_classifier_lstm.h5')
 MAX_LEN = 100
 
 # --------- PostgreSQL setup ---------
