@@ -12,7 +12,7 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 
 # --------- Load tokenizer and model ---------
-with open(r'tokenizer.pkl', 'rb') as f:
+with open(r'tokenizer_clean.pkl', 'rb') as f:
     tokenizer = pickle.load(f)
 
 model = load_model(r'toxic_classifier_lstm.h5')
