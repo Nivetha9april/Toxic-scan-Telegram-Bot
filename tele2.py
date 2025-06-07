@@ -1,93 +1,120 @@
-import pickle
-import numpy as np
-import psycopg2
+import json
+import logging
+import os
 from datetime import datetime, timedelta
+
+import psycopg2
 import speech_recognition as sr
 from pydub import AudioSegment
-import os
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 from telegram.error import BadRequest
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.preprocessing.text import tokenizer_from_json
 
-# --------- Load tokenizer and model ---------
-with open(r'tokenizer_clean.pkl', 'rb') as f:
-    tokenizer = pickle.load(f)
+# --------- Logging setup ---------
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
+# --------- Load tokenizer from JSON ---------
+with open('tokenizer_clean.json', 'r', encoding='utf-8') as f:
+    tokenizer_json = f.read()
+tokenizer = tokenizer_from_json(tokenizer_json)
+
+# --------- Load model ---------
 model = load_model(r'toxic_classifier_lstm.h5')
 MAX_LEN = 100
 
 # --------- PostgreSQL setup ---------
-conn = psycopg2.connect(
-    dbname="toxic_comment_detection",
-    user="postgres",
-    password="postgres",
-    host="localhost",
-    port="5432"
-)
-cursor = conn.cursor()
+try:
+    conn = psycopg2.connect(
+        dbname="toxic_comment_detection",
+        user="postgres",
+        password="postgres",
+        host="localhost",
+        port="5432"
+    )
+    cursor = conn.cursor()
+    logger.info("PostgreSQL connected successfully.")
+except Exception as e:
+    logger.error(f"Failed to connect to PostgreSQL: {e}")
+    raise e
 
+# --------- Database functions ---------
 def get_user_record(user_id):
-    cursor.execute("SELECT toxic_count, blocked_until FROM toxic_users WHERE user_id = %s", (user_id,))
-    return cursor.fetchone()
+    try:
+        cursor.execute("SELECT toxic_count, blocked_until FROM toxic_users WHERE user_id = %s", (user_id,))
+        return cursor.fetchone()
+    except Exception as e:
+        logger.error(f"DB error in get_user_record: {e}")
+        return None
 
 def update_user_record(user_id, username, toxic_count, blocked_until):
-    cursor.execute("""
-        INSERT INTO toxic_users (user_id, username, toxic_count, blocked_until)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (user_id)
-        DO UPDATE SET toxic_count = EXCLUDED.toxic_count,
-                      blocked_until = EXCLUDED.blocked_until,
-                      username = EXCLUDED.username
-    """, (user_id, username, toxic_count, blocked_until))
-    conn.commit()
+    try:
+        cursor.execute("""
+            INSERT INTO toxic_users (user_id, username, toxic_count, blocked_until)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (user_id)
+            DO UPDATE SET toxic_count = EXCLUDED.toxic_count,
+                          blocked_until = EXCLUDED.blocked_until,
+                          username = EXCLUDED.username
+        """, (user_id, username, toxic_count, blocked_until))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"DB error in update_user_record: {e}")
 
 # --------- Toxicity detection ---------
 def detect_toxicity(text):
     sequence = tokenizer.texts_to_sequences([text])
     padded = pad_sequences(sequence, maxlen=MAX_LEN)
     prediction = model.predict(padded)[0][0]
+    logger.info(f"Toxicity prediction for '{text}': {prediction:.4f}")
     return 1 if prediction > 0.5 else 0  # 1 = toxic, 0 = non-toxic
 
-# --------- Simple explainability: highlight toxic keywords ---------
-# For demo, define a small list of toxic keywords your model likely flags (expand as needed)
+# --------- Simple explainability ---------
 TOXIC_KEYWORDS = {'hate', 'stupid', 'idiot', 'dumb', 'kill', 'trash', 'ugly'}
 
 def explain_toxicity(text):
     words = text.split()
     highlighted = []
     for w in words:
-        # Simple lowercase check if word is toxic keyword
         if w.lower() in TOXIC_KEYWORDS:
             highlighted.append(f"**{w}**")  # Bold toxic words
         else:
             highlighted.append(w)
     return ' '.join(highlighted)
 
-# --------- Speech to text from voice message ---------
+# --------- Speech to text ---------
 def speech_to_text(file_path):
-    # Convert ogg/opus to wav
     wav_path = file_path.replace('.ogg', '.wav')
-    sound = AudioSegment.from_file(file_path)
-    sound.export(wav_path, format="wav")
+    try:
+        sound = AudioSegment.from_file(file_path)
+        sound.export(wav_path, format="wav")
+    except Exception as e:
+        logger.error(f"Audio conversion error: {e}")
+        return ""
 
     r = sr.Recognizer()
-    with sr.AudioFile(wav_path) as source:
-        audio = r.record(source)
-
     try:
+        with sr.AudioFile(wav_path) as source:
+            audio = r.record(source)
         text = r.recognize_google(audio)
     except sr.UnknownValueError:
+        logger.warning("Google Speech Recognition could not understand audio")
         text = ""
-    except sr.RequestError:
+    except sr.RequestError as e:
+        logger.error(f"Could not request results from Google Speech Recognition service; {e}")
         text = ""
-
-    # Clean up wav file
-    os.remove(wav_path)
+    finally:
+        if os.path.exists(wav_path):
+            os.remove(wav_path)
     return text
 
-# --------- Bot handlers ---------
+# --------- Telegram bot handlers ---------
 def start(update: Update, context: CallbackContext):
     update.message.reply_text("👋 Welcome! Send me text or voice messages and I'll check for toxicity.")
 
@@ -106,7 +133,6 @@ def handle_text(update: Update, context: CallbackContext):
     if record:
         toxic_count, blocked_until = record
         if blocked_until and now < blocked_until:
-            # Delete message from blocked user
             try:
                 context.bot.delete_message(chat_id=chat_id, message_id=message_id)
             except BadRequest:
@@ -119,7 +145,6 @@ def handle_text(update: Update, context: CallbackContext):
     if prediction == 1:
         toxic_count += 1
 
-        # Delete toxic message
         try:
             context.bot.delete_message(chat_id=chat_id, message_id=message_id)
         except BadRequest:
@@ -159,21 +184,17 @@ def handle_voice(update: Update, context: CallbackContext):
             update.message.reply_text(f"⛔ You're blocked until {blocked_until.strftime('%Y-%m-%d %H:%M:%S')}")
             return
 
-    # Download voice file
     voice_file = update.message.voice.get_file()
     ogg_path = f"{user_id}_{message_id}.ogg"
     voice_file.download(ogg_path)
 
-    # Convert speech to text
     text = speech_to_text(ogg_path)
 
-    # Remove the original voice message (optional)
     try:
         context.bot.delete_message(chat_id=chat_id, message_id=message_id)
     except BadRequest:
         pass
 
-    # Clean up ogg file
     if os.path.exists(ogg_path):
         os.remove(ogg_path)
 
@@ -201,7 +222,7 @@ def handle_voice(update: Update, context: CallbackContext):
 
 # --------- Main ---------
 def main():
-    TOKEN = '8117423761:AAHajq68kw5uGvm9KVhyEK937DKvsOxPNLo'  # Replace here
+    TOKEN = "8117423761:AAHajq68kw5uGvm9KVhyEK937DKvsOxPNLo"  # Replace with your token
 
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
@@ -210,6 +231,7 @@ def main():
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
     dp.add_handler(MessageHandler(Filters.voice, handle_voice))
 
+    logger.info("Bot started. Waiting for messages...")
     updater.start_polling()
     updater.idle()
 
