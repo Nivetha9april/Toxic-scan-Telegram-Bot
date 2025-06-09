@@ -35,7 +35,7 @@ try:
     dbname="toxicusers",         # your database name on Render
     user="toxicusers_user",                   # your Render DB user
     password="P2fnJbxr45IByiahCi3Smbco7I1FKgxO",           # your Render DB password
-    host="dpg-d121a0juibrs73end2rg-a.render.com",  # your Render DB host
+    host="dpg-d121a0juibrs73end2rg-a",  # your Render DB host
     port="5432",
     sslmode='require'                          # important for Render PostgreSQL
 )
