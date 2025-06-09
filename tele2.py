@@ -32,7 +32,7 @@ MAX_LEN = 100
 # --------- PostgreSQL setup ---------
 try:
     conn = psycopg2.connect(
-    dbname="toxic_comment_detection",         # your database name on Render
+    dbname="toxicusers",         # your database name on Render
     user="toxicusers_user",                   # your Render DB user
     password="P2fnJbxr45IByiahCi3Smbco7I1FKgxO",           # your Render DB password
     host="dpg-d121a0juibrs73end2rg-a.render.com",  # your Render DB host
